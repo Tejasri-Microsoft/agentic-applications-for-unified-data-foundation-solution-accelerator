@@ -18,20 +18,20 @@ import {
   sendMessage,
 } from "../../store/chatSlice";
 import {
-  setSelectedConversationId,
   startNewConversation,
+  setSelectedConversationId,
 } from "../../store/appSlice";
 import {
+  updateConversation,
   addNewConversation,
-  updateConversation, // eslint-disable-line @typescript-eslint/no-unused-vars
 } from "../../store/chatHistorySlice";
 import { clearCitation } from "../../store/citationSlice";
 import {
   type ChartDataResponse,
-  type Conversation,
   type ConversationRequest,
   type ParsedChunk,
   type ChatMessage,
+  type Conversation,
   ToolMessageContent,
 } from "../../types/AppTypes";
 import { ChatAdd24Regular } from "@fluentui/react-icons";
@@ -68,6 +68,8 @@ const Chat: React.FC<ChatProps> = ({
   const [isChartLoading, setIsChartLoading] = useState(false);
   const abortFuncs = useRef([] as AbortController[]);
   const chatMessageStreamEnd = useRef<HTMLDivElement | null>(null);
+  const isRequestInProgressRef = useRef(false);
+  const isNewConversationSavedRef = useRef(false);
   
   // Memoized computed values
   const currentConversationId = useMemo(() => 
@@ -87,32 +89,50 @@ const Chat: React.FC<ChatProps> = ({
     [generatingResponse, userMessage, isHistoryUpdateAPIPending]
   );
   
+  // Reset the ref when a new conversation is started (generatedConversationId changes)
+  useEffect(() => {
+    isNewConversationSavedRef.current = false;
+  }, [generatedConversationId]);
+
   const saveToDB = useCallback(async (newMessages: ChatMessage[], convId: string, reqType: string = 'Text') => {
     if (!convId || !newMessages.length) {
       return;
     }
-    const isNewConversation = !selectedConversationId;
+
+    // Use both the closure value and a ref to reliably determine if this is
+    // the first save for a new conversation. The ref guards against stale
+    // closures when two messages are sent in quick succession.
+    const isNewConversation = !selectedConversationId && !isNewConversationSavedRef.current;
+
+    // Mark immediately (before await) so any concurrent/subsequent call
+    // from a stale closure will see this flag and skip the new-conversation path.
+    if (isNewConversation) {
+      isNewConversationSavedRef.current = true;
+    }
 
     try {
       const result = await dispatch(updateConversation({ conversationId: convId, messages: newMessages })).unwrap();
-      
+
       if (isNewConversation && result?.success) {
+        const conversationId = result?.data?.conversation_id;
+
+        // Set ID FIRST to prevent race conditions
+        dispatch(setSelectedConversationId(conversationId));
+
         const newConversation: Conversation = {
-          id: result?.data?.conversation_id,
+          id: conversationId,
           title: result?.data?.title,
-          messages: messages,
+          messages: newMessages,
           date: result?.data?.date,
           updatedAt: result?.data?.date,
         };
+
         dispatch(addNewConversation(newConversation));
-        dispatch(setSelectedConversationId(result?.data?.conversation_id));
       }
     } catch {
       // Error saving data to database
-    } finally {
-      dispatch(setGeneratingResponse(false));
     }
-  }, [selectedConversationId, messages, dispatch]);
+  }, [dispatch, selectedConversationId]);
   const parseCitationFromMessage = useCallback((message: string) => {
   try {
     message = '{' + message;
@@ -222,7 +242,8 @@ const Chat: React.FC<ChatProps> = ({
     question: string,
     conversationId: string
   ) => {
-    if (generatingResponse || !question.trim()) return;
+    if (isRequestInProgressRef.current || !question.trim()) return;
+    isRequestInProgressRef.current = true;
 
     const newMessage: ChatMessage = {
       id: generateUUIDv4(),
@@ -308,14 +329,14 @@ const Chat: React.FC<ChatProps> = ({
       }
       
       if (updatedMessages.length > 0) {
-        saveToDB(updatedMessages, conversationId, 'graph');
+        await saveToDB(updatedMessages, conversationId, 'graph');
       }
     } catch (e) {
       // Error in chart API request
 
       if (abortController.signal.aborted) {
         updatedMessages = [newMessage];
-        saveToDB(updatedMessages, conversationId, 'graph');
+        await saveToDB(updatedMessages, conversationId, 'graph');
       } else if (e instanceof Error) {
         alert(e.message);
       } else {
@@ -325,6 +346,7 @@ const Chat: React.FC<ChatProps> = ({
       dispatch(setGeneratingResponse(false));
       dispatch(setStreamingFlag(false));
       setIsChartLoading(false);
+      isRequestInProgressRef.current = false;
       abortController.abort();
     }
   };
@@ -333,7 +355,8 @@ const Chat: React.FC<ChatProps> = ({
     question: string,
     conversationId: string
   ) => {
-    if (generatingResponse || !question.trim()) return;
+    if (isRequestInProgressRef.current || !question.trim()) return;
+    isRequestInProgressRef.current = true;
     
     const isChatReq = isChartQuery(userMessage) ? "graph" : "Text";
     const newMessage: ChatMessage = {
@@ -519,7 +542,7 @@ const Chat: React.FC<ChatProps> = ({
       }
       
       if (updatedMessages.length > 0) {
-        saveToDB(updatedMessages, conversationId, isChatReq);
+        await saveToDB(updatedMessages, conversationId, isChatReq);
       }
     } catch (e) {
       // Error in API request
@@ -529,7 +552,7 @@ const Chat: React.FC<ChatProps> = ({
           ? [newMessage, streamMessage]
           : [newMessage];
         
-        saveToDB(updatedMessages, conversationId, 'error');
+        await saveToDB(updatedMessages, conversationId, 'error');
       } else if (e instanceof Error) {
         alert(e.message);
       } else {
@@ -538,6 +561,7 @@ const Chat: React.FC<ChatProps> = ({
     } finally {
       dispatch(setGeneratingResponse(false));
       dispatch(setStreamingFlag(false));
+      isRequestInProgressRef.current = false;
       abortController.abort();
     }
   };

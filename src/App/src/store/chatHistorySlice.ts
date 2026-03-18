@@ -1,7 +1,7 @@
 import { createSlice, createAsyncThunk, type PayloadAction } from "@reduxjs/toolkit";
 import type { Conversation, ChatMessage } from "../types/AppTypes";
 import { historyList, historyRead, historyDeleteAll, historyDelete, historyUpdate, historyRename } from "../api/api";
-
+let isUpdateConversationInFlight = false;
 export interface ChatHistoryState {
   list: Conversation[];
   fetchingConversations: boolean;
@@ -61,10 +61,26 @@ export const deleteConversation = createAsyncThunk(
 
 export const updateConversation = createAsyncThunk(
   "chatHistory/update",
-  async ({ conversationId, messages }: { conversationId: string; messages: ChatMessage[] }) => {
-    const response = await historyUpdate(messages, conversationId);
-    const responseJson = await response.json();
-    return responseJson;
+  async (
+    { conversationId, messages }: { conversationId: string; messages: ChatMessage[] },
+    { rejectWithValue }
+  ) => {
+    if (isUpdateConversationInFlight) {
+      return rejectWithValue("Update already in progress");
+    }
+
+    isUpdateConversationInFlight = true;
+
+    try {
+      const response = await historyUpdate(messages, conversationId);
+      const responseJson = await response.json();
+
+      return { ...responseJson, messages };
+    } catch (error) {
+      return rejectWithValue(error);
+    } finally {
+      isUpdateConversationInFlight = false;
+    }
   }
 );
 
@@ -81,10 +97,32 @@ const chatHistorySlice = createSlice({
   initialState,
   reducers: {
     addConversations: (state, action: PayloadAction<Conversation[]>) => {
-      state.list.push(...action.payload);
+      const incoming = action.payload;
+
+      const map = new Map<string, Conversation>();
+
+      // Keep existing
+      state.list.forEach((c) => {
+        if (c.id) map.set(c.id, c);
+      });
+
+      // Overwrite with incoming (latest wins)
+      incoming.forEach((c) => {
+        if (c.id) map.set(c.id, c);
+      });
+
+      state.list = Array.from(map.values());
     },
     addNewConversation: (state, action: PayloadAction<Conversation>) => {
-      state.list.unshift(action.payload);
+      const incoming = action.payload;
+
+      if (!incoming?.id) return;
+
+      // Remove any existing duplicate
+      state.list = state.list.filter((c) => c.id !== incoming.id);
+
+      // Insert fresh at top
+      state.list.unshift(incoming);
     },
     updateConversationTitle: (state, action: PayloadAction<{ id: string; newTitle: string }>) => {
       const index = state.list.findIndex((obj) => obj.id === action.payload.id);
@@ -126,9 +164,11 @@ const chatHistorySlice = createSlice({
           // Replace list for initial fetch
           state.list = conversations || [];
         } else {
-          // Append for pagination
+          // Append for pagination, dedup by id
           if (conversations) {
-            state.list.push(...conversations);
+            const existingIds = new Set(state.list.map((c) => c.id).filter(Boolean));
+            const newConversations = conversations.filter((c) => !existingIds.has(c.id));
+            state.list.push(...newConversations);
           }
         }
       }
@@ -168,9 +208,21 @@ const chatHistorySlice = createSlice({
     builder.addCase(updateConversation.pending, (state) => {
       state.isHistoryUpdateAPIPending = true;
     });
-    builder.addCase(updateConversation.fulfilled, (state) => {
-      state.isHistoryUpdateAPIPending = false;
-    });
+    builder.addCase(updateConversation.fulfilled, (state, action) => {
+  state.isHistoryUpdateAPIPending = false;
+
+  const { data, messages } = action.payload || {};
+  const conversationId = data?.conversation_id;
+
+  if (!conversationId) return;
+
+  const index = state.list.findIndex((c) => c.id === conversationId);
+
+  if (index > -1) {
+    state.list[index].messages = messages;
+    state.list[index].updatedAt = data?.date;
+  }
+});
     builder.addCase(updateConversation.rejected, (state) => {
       state.isHistoryUpdateAPIPending = false;
     });

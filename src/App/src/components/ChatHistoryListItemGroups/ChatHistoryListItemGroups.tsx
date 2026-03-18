@@ -1,7 +1,6 @@
 import * as React from "react";
 import { useEffect, useRef } from "react";
 import {
-  List,
   Separator,
   Spinner,
   SpinnerSize,
@@ -34,7 +33,19 @@ export const ChatHistoryListItemGroups: React.FC<
   const initialCall = useRef(true);
   const chatHistory = useAppSelector((state) => state.chatHistory);
 
-  const groupedChatHistory = segregateItems(chatHistory.list);
+  const uniqueConversations = React.useMemo(() => {
+    const map = new Map<string, Conversation>();
+
+    chatHistory.list.forEach((conv) => {
+      if (conv.id && !map.has(conv.id)) {
+        map.set(conv.id, conv);
+      }
+    });
+
+    return Array.from(map.values());
+  }, [chatHistory.list]);
+
+  const groupedChatHistory = segregateItems(uniqueConversations);
 
   const handleSelectHistory = (item?: Conversation) => {
     if (typeof item === "object") {
@@ -42,15 +53,6 @@ export const ChatHistoryListItemGroups: React.FC<
     }
   };
 
-  const onRenderCell = (item?: Conversation) => {
-    return (
-      <ChatHistoryListItemCell
-        item={item}
-        onSelect={() => handleSelectHistory(item)}
-        key={item?.id}
-      />
-    );
-  };
   useEffect(() => {
     if (initialCall.current) {
       initialCall.current = false;
@@ -142,12 +144,15 @@ export const ChatHistoryListItemGroups: React.FC<
               <Stack aria-label={group.title} className={styles.chatMonth}>
                 {group.title}
               </Stack>
-              <List
-                aria-label={`chat history list`}
-                items={group.entries}
-                onRenderCell={onRenderCell}
-                className={styles.chatList}
-              />
+              <div aria-label="chat history list" className={styles.chatList}>
+                {group.entries.map((item) => (
+                  <ChatHistoryListItemCell
+                    item={item}
+                    onSelect={() => handleSelectHistory(item)}
+                    key={item.id}
+                  />
+                ))}
+              </div>
             </Stack>
           )
       )}
