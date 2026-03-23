@@ -68,6 +68,7 @@ const Chat: React.FC<ChatProps> = ({
   const [isChartLoading, setIsChartLoading] = useState(false);
   const abortFuncs = useRef([] as AbortController[]);
   const chatMessageStreamEnd = useRef<HTMLDivElement | null>(null);
+  const isCreatingConversationRef = useRef(false);
   
   // Memoized computed values
   const currentConversationId = useMemo(() => 
@@ -91,7 +92,11 @@ const Chat: React.FC<ChatProps> = ({
     if (!convId || !newMessages.length) {
       return;
     }
-    const isNewConversation = !selectedConversationId;
+    const isNewConversation = !selectedConversationId && !isCreatingConversationRef.current;
+
+    if (isNewConversation) {
+      isCreatingConversationRef.current = true;
+    }
 
     try {
       const result = await dispatch(updateConversation({ conversationId: convId, messages: newMessages })).unwrap();
@@ -109,8 +114,6 @@ const Chat: React.FC<ChatProps> = ({
       }
     } catch {
       // Error saving data to database
-    } finally {
-      dispatch(setGeneratingResponse(false));
     }
   }, [selectedConversationId, messages, dispatch]);
   const parseCitationFromMessage = useCallback((message: string) => {
@@ -308,14 +311,14 @@ const Chat: React.FC<ChatProps> = ({
       }
       
       if (updatedMessages.length > 0) {
-        saveToDB(updatedMessages, conversationId, 'graph');
+        await saveToDB(updatedMessages, conversationId, 'graph');
       }
     } catch (e) {
       // Error in chart API request
 
       if (abortController.signal.aborted) {
         updatedMessages = [newMessage];
-        saveToDB(updatedMessages, conversationId, 'graph');
+        await saveToDB(updatedMessages, conversationId, 'graph');
       } else if (e instanceof Error) {
         alert(e.message);
       } else {
@@ -515,7 +518,7 @@ const Chat: React.FC<ChatProps> = ({
       }
       
       if (updatedMessages.length > 0) {
-        saveToDB(updatedMessages, conversationId, isChatReq);
+        await saveToDB(updatedMessages, conversationId, isChatReq);
       }
     } catch (e) {
       // Error in API request
@@ -525,7 +528,7 @@ const Chat: React.FC<ChatProps> = ({
           ? [newMessage, streamMessage]
           : [newMessage];
         
-        saveToDB(updatedMessages, conversationId, 'error');
+        await saveToDB(updatedMessages, conversationId, 'error');
       } else if (e instanceof Error) {
         alert(e.message);
       } else {
@@ -570,6 +573,7 @@ const Chat: React.FC<ChatProps> = ({
   }, [dispatch]);
 
   const onNewConversation = useCallback(() => {
+    isCreatingConversationRef.current = false;
     dispatch(startNewConversation());
     dispatch(clearChat());
     dispatch(clearCitation());

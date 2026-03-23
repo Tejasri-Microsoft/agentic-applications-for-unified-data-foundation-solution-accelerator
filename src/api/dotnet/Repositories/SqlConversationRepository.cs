@@ -140,9 +140,18 @@ public class SqlConversationRepository : ISqlConversationRepository
             }
         }
         
-        // Conversation doesn't exist, create it
+        // Conversation doesn't exist, create it atomically to prevent race conditions
         _logger.LogInformation("EnsureConversationAsync - Creating NEW conversation with id={ConversationId}", id);
-        const string insertSql = "INSERT INTO hst_conversations (userId, conversation_id, title, createdAt, updatedAt) VALUES (@u, @c, @t, @n, @n)";
+        const string insertSql = @"
+            IF NOT EXISTS (SELECT 1 FROM hst_conversations WHERE conversation_id=@c)
+            BEGIN
+                INSERT INTO hst_conversations (userId, conversation_id, title, createdAt, updatedAt) VALUES (@u, @c, @t, @n, @n);
+                SELECT 1 AS inserted;
+            END
+            ELSE
+            BEGIN
+                SELECT 0 AS inserted;
+            END";
         var now = DateTime.UtcNow.ToString("o");
         using (var cmd = new SqlCommand(insertSql, (SqlConnection)conn))
         {
@@ -150,10 +159,10 @@ public class SqlConversationRepository : ISqlConversationRepository
             cmd.Parameters.Add(new SqlParameter("@c", id));
             cmd.Parameters.Add(new SqlParameter("@t", title ?? string.Empty));
             cmd.Parameters.Add(new SqlParameter("@n", now));
-            var rowsAffected = cmd.ExecuteNonQuery();
-            _logger.LogInformation("EnsureConversationAsync - Created conversation, rows affected: {RowsAffected}", rowsAffected);
+            var inserted = (int)(cmd.ExecuteScalar() ?? 0);
+            _logger.LogInformation("EnsureConversationAsync - Conversation {ConversationId} inserted={Inserted}", id, inserted);
+            return (id, inserted == 1);
         }
-        return (id, true); // New conversation created
     }
 
     public async Task UpdateConversationTitleAsync(string? userId, string conversationId, string title, CancellationToken ct)

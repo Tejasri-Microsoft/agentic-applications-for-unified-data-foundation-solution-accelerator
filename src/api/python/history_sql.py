@@ -676,8 +676,19 @@ async def create_conversation(user_id, title="", conversation_id=None):
         utc_now = datetime.utcnow().isoformat()
         query = "INSERT INTO hst_conversations (userId, conversation_id, title, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)"
         params = (user_id, conversation_id, title, utc_now, utc_now)
-        resp = await run_nonquery_params(query, params)
-        return resp
+        try:
+            resp = await run_nonquery_params(query, params)
+            return resp
+        except Exception:
+            # Handle race condition: another concurrent request may have inserted
+            # the same conversation between our SELECT and INSERT
+            existing = await run_query_params(
+                "SELECT * FROM hst_conversations where conversation_id = ?",
+                (conversation_id,)
+            )
+            if existing and len(existing) > 0:
+                return existing
+            raise
     except Exception:
         logger.exception("Error in create_conversation")
         raise

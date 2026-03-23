@@ -168,8 +168,6 @@ async def stream_openai_text(conversation_id: str, query: str) -> StreamingRespo
         if not query:
             query = "Please provide a query."
 
-        logger.info("Chat request received - query: %s, conversation_id: %s", query, conversation_id)
-
         credential = await get_azure_credential_async()
 
         async with AIProjectClient(
